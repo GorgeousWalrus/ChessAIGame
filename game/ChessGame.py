@@ -668,6 +668,7 @@ class ChessGame:
     self.board.game = self
     self.current_player = 0
     self.history = []
+    self.fide_history = []
 
   def printBoard(self):
     """Print the current board setup"""
@@ -713,7 +714,9 @@ class ChessGame:
     Input:
     Return:
     """
+    # TODO Undo promotion
     last_move = self.history.pop()
+    self.fide_history.pop()
     moved_figure = self.board.getFigure(last_move[0][0])
     taken_figure = last_move[1]
     self.board.update(taken_figure, last_move[0][0])
@@ -727,11 +730,133 @@ class ChessGame:
         board[i][j] = self.board.getFigure((i,j)).getID()
     return board
 
-  def move(self, move):
+  def translateFromFIDE(self, fide_str):
+    """
+    Translate the FIDE move to the internal representation
+    Input:
+      fide_str: String
+    Return:
+      Tuple of (Tuple of Tuple of Int) and Str
+    """
+    # Get figure string
+    if fide_str[0] in ['R', 'N', 'B', 'Q', 'K']:
+      figure_str = fide_str[0].lower()
+      fide_str = fide_str[1:]
+    else:
+      figure_str = 'p'
+    # Get promotion string
+    if fide_str[-1] in ['R', 'N', 'B', 'Q']:
+      promotion_str = fide_str[-1]
+      fide_str = fide_str[0:-1]
+    else:
+      promotion_str = ''
+    # Get destination string
+    dest_str = fide_str[-2:]
+    fide_str = fide_str[0:-2]
+    # Clear the 'x' indicating capture
+    if len(fide_str) > 0:
+      if fide_str[-1] == 'x':
+        fide_str = fide_str[0:-1]
+    # Get disambiguation str
+    disamb_row = None
+    disamb_column = None
+    if len(fide_str) > 0:
+      if len(fide_str) == 1:
+        if ord(fide_str) >= 97 and ord(fide_str) <= 104:
+          disamb_column = ord(fide_str) - 97
+        else:
+          disamb_row = int(fide_str) - 1
+      else:
+        disamb_column = ord(fide_str[0]) - 97
+        disamb_row = int(fide_str) - 1
+    # Get all figures with that figure string
+    possible_figures = []
+    for figure in self.board.player_figures[self.current_player]:
+      if figure.name == figure_str:
+        possible_figures.append(figure)
+    # Disambiguate
+    destination = (ord(dest_str[0])-97, int(dest_str[1])-1)
+    if len(possible_figures) > 1:
+      if isinstance(possible_figures[0], Pawn):
+        for figure in possible_figures:
+          if disamb_column:
+            if figure.position[0] == disamb_column:
+              moved_figure = figure
+              break
+          elif figure.position[0] == ord(dest_str[0]) - 97:
+            moved_figure = figure
+            break
+      else:
+        for figure in possible_figures:
+          if disamb_column and disamb_row and figure.position == (disamb_column, disamb_row):
+            moved_figure = figure
+            break
+          elif disamb_column and figure.position[0] == disamb_column:
+            moved_figure = figure
+            break
+          elif disamb_row and figure.position[1] == disamb_row:
+            moved_figure = figure
+            break
+          elif figure.isValidMove(destination):
+            moved_figure = figure
+            break
+    else:
+      moved_figure = possible_figures[0]
+    return moved_figure.position, destination, promotion_str
+
+  def translateToFIDE(self, move, moved_figure, taken_figure, is_check, is_checkmate):
+    """
+    Translate the move to FIDE standard
+    Input:
+      move: Tuple of Tuple of int
+      taken_figure: Object of class Figure
+    Return:
+      String
+    """
+    promotion_str = ''
+    if isinstance(moved_figure, Pawn):
+      fig_str = ''
+      if moved_figure.player == 0 and move[1][1] == 7:
+        promotion_str = self.board.getFigure(move[1]).name.upper()
+      elif moved_figure.player == 1 and move[1][1] == 0:
+        promotion_str = self.board.getFigure(move[1]).name.upper()
+    else:
+      fig_str = moved_figure.name.upper()
+      for figure in self.board.player_figures[moved_figure.player]:
+        ambigous_figures = []
+        if figure.name == moved_figure.name:
+          if figure.isValidMove(move[1]):
+            ambigous_figures.append(figure)
+        for ambigous_figure in ambigous_figures:
+          if ambigous_figure.position[0] == move[0][0]:
+            fig_str += chr(move[0][0]+97)
+          if ambigous_figure.position[1] == move[0][1]:
+            fig_str += str(move[0][1]+1)
+    if not isinstance(taken_figure, Empty):
+      taken_str = 'x'
+      if isinstance(moved_figure, Pawn):
+        taken_str = chr(move[0][0]+97) + taken_str
+    else:
+      taken_str = ''
+    dest_str = chr(move[1][0] + 97) + str(move[1][1]+1)
+    if isinstance(moved_figure, King):
+      if move[0][0] - move[1][0] == -2:
+        fide_str = 'O-O-O'
+      elif move[0][0] - move[1][0] == 2:
+        fide_str = 'O-O'
+    else:
+      fide_str = fig_str + taken_str + dest_str + promotion_str
+    if is_checkmate:
+      fide_str += '#'
+    elif is_check:
+      fide_str += '+'
+    return fide_str
+
+  def move(self, fide_str):
     """
     Move figure to position
     Input:
-      move: Tuple of Tuple of Int
+      move: String according to FIDE chess standard
     Return:
       Int
         0 : Success
@@ -742,6 +867,11 @@ class ChessGame:
         4 : Checkmate, player 2 won
         5 : Draw
     """
+    try:
+      move = self.translateFromFIDE(fide_str)
+    except IndexError:
+      return -1
+    # moved_figure = self.board.getFigure(move[0])
     retval, taken_figure = self.board.move(self.current_player, move[0], move[1])
     if not retval:
       return -1
@@ -751,8 +881,11 @@ class ChessGame:
     else:
       self.current_player = 1
     is_check, attacking_figures = self.board.isCheck(self.current_player)
+    is_checkmate = self.board.isCheckmate(self.current_player, attacking_figures)
+    # fide_str = self.translateToFIDE(move, moved_figure, taken_figure, is_check, is_checkmate)
+    self.fide_history.append(fide_str)
     if is_check:
-      if self.board.isCheckmate(self.current_player, attacking_figures):
+      if is_checkmate:
         if self.current_player == 1:
           return 3
         return 4
