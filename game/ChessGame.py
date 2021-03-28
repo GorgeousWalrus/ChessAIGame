@@ -2,6 +2,10 @@
 A module for a game of chess
 """
 
+class NoFigureException(Exception):
+  def __init__(self, message = 'No such figure'):
+    super().__init__(message)
+
 import copy
 
 def isOnBoard(position):
@@ -297,13 +301,6 @@ class King(Figure):
     return True
 
   def move(self, destination):
-    """
-    Move to destination
-    Input:
-      destination: Tuple of Int     - X and Y coordinate of destination
-    Return:
-      Bool                          - True: All fine, False: Invalid move
-    """
     if not self.isValidMove(destination):
       return False
     if abs(destination[0] - self.position[0]) == 2:
@@ -508,7 +505,7 @@ class Board:
         if isinstance(copy_figure, King):
           board.kings[copy_figure.player] = copy_figure
     copy_figure = board.getFigure(figure.position)
-    board.update(copy_figure, destination)
+    board.update(copy_figure, destination, 'Q')
     copy_figure.position = destination
     is_check, _ = board.isCheck(figure.player)
     return is_check
@@ -525,22 +522,39 @@ class Board:
       return Empty(self, position)
     return self.board[position[0]][position[1]]
 
-  def update(self, figure, destination):
+  def update(self, figure, destination, promotion_str=''):
     """
     Update the board after a move
     Input:
       figure:       Object of class Figure
       destination:  Tuple of Int
+      promotion_str: String         - If pawn reaches 'finish-line', promote it
     Return:
       None
     """
+    old_position = [figure.position[0], figure.position[1]]
     if isinstance(figure, Pawn) and figure.isEnPassant(destination):
       old_figure_position = destination[0], figure.position[1]
       old_figure = self.getFigure(old_figure_position)
       self.board[old_figure_position[0]][old_figure_position[1]] = Empty(self, old_figure_position)
     else:
       old_figure = self.getFigure(destination)
-    old_position = [figure.position[0], figure.position[1]]
+    if isinstance(figure, Pawn):
+      if(figure.player == 0 and destination[1] == 7
+          or figure.player == 1 and destination[1] == 0):
+        if promotion_str == 'Q':
+          promoted_figure = Queen(self, destination, figure.player)
+        elif promotion_str == 'R':
+          promoted_figure = Rook(self, destination, figure.player)
+        elif promotion_str == 'N':
+          promoted_figure = Knight(self, destination, figure.player)
+        elif promotion_str == 'B':
+          promoted_figure = Bishop(self, destination, figure.player)
+        else:
+          raise Exception("Unknown promotion")
+        self.player_figures[figure.player].remove(figure)
+        self.player_figures[figure.player].append(promoted_figure)
+        figure = promoted_figure
     if not isinstance(old_figure, Empty):
       try:
         self.player_figures[old_figure.player].remove(old_figure)
@@ -552,13 +566,14 @@ class Board:
     figure.position = destination
     return old_figure
 
-  def move(self, player, start_pos, end_pos):
+  def move(self, player, start_pos, end_pos, promotion_str):
     """
     Move figure to position
     Input:
       player:    Int
       start_pos: Tuple of Int
       end_pos:   Tuple of Int
+      promotion_str: String         - If pawn reaches 'finish-line', promote it
     Return:
       Bool (success or invalid move)
     """
@@ -569,7 +584,7 @@ class Board:
       return False, None
     if not figure.move(end_pos):
       return False, None
-    return True, self.update(figure, end_pos)
+    return True, self.update(figure, end_pos, promotion_str)
 
   def isCheckmateSingle(self, player, attacking_figure):
     """
@@ -703,10 +718,17 @@ class ChessGame:
     except IndexError:
       # Not enough moves
       pass
-    # TODO: Check if 75 in the last 75 moves no figure was taken and no pawn was moved
-    if self.board.isStaleMate(self.current_player):
-      return True
-    return False
+    if len(self.fide_history) > 75:
+      # Check if within the last 75 moves a pawn was moved
+      # or a figure was taken
+      draw = True
+      for move in self.fide_history[-75:]:
+        if move[0] in ['R', 'N', 'B', 'Q', 'K'] or 'x' in move:
+          draw = False
+          break
+      if draw:
+        return True
+    return self.board.isStaleMate(self.current_player)
 
   def undo(self):
     """
@@ -776,32 +798,36 @@ class ChessGame:
         possible_figures.append(figure)
     # Disambiguate
     destination = (ord(dest_str[0])-97, int(dest_str[1])-1)
+    moved_figure = None
     if len(possible_figures) > 1:
       if isinstance(possible_figures[0], Pawn):
         for figure in possible_figures:
-          if disamb_column:
-            if figure.position[0] == disamb_column:
+          if disamb_column is not None:
+            if figure.position[0] == disamb_column and figure.isValidMove(destination):
               moved_figure = figure
               break
-          elif figure.position[0] == ord(dest_str[0]) - 97:
+          elif figure.position[0] == ord(dest_str[0]) - 97 and figure.isValidMove(destination):
             moved_figure = figure
             break
       else:
         for figure in possible_figures:
-          if disamb_column and disamb_row and figure.position == (disamb_column, disamb_row):
+          if(disamb_column is not None and disamb_row is not None
+              and figure.position == (disamb_column, disamb_row)):
             moved_figure = figure
             break
-          elif disamb_column and figure.position[0] == disamb_column:
+          if disamb_column is not None and figure.position[0] == disamb_column:
             moved_figure = figure
             break
-          elif disamb_row and figure.position[1] == disamb_row:
+          if disamb_row is not None and figure.position[1] == disamb_row:
             moved_figure = figure
             break
-          elif figure.isValidMove(destination):
+          if figure.isValidMove(destination):
             moved_figure = figure
             break
     else:
       moved_figure = possible_figures[0]
+    if not moved_figure:
+      raise NoFigureException()
     return moved_figure.position, destination, promotion_str
 
   def translateToFIDE(self, move, moved_figure, taken_figure, is_check, is_checkmate):
@@ -868,14 +894,14 @@ class ChessGame:
         5 : Draw
     """
     try:
-      move = self.translateFromFIDE(fide_str)
-    except IndexError:
+      start, destination, promotion_str = self.translateFromFIDE(fide_str)
+    except (IndexError, NoFigureException):
       return -1
     # moved_figure = self.board.getFigure(move[0])
-    retval, taken_figure = self.board.move(self.current_player, move[0], move[1])
+    retval, taken_figure = self.board.move(self.current_player, start, destination, promotion_str)
     if not retval:
       return -1
-    self.history.append((move, taken_figure))
+    self.history.append(((start, destination), taken_figure))
     if self.current_player == 1:
       self.current_player = 0
     else:
