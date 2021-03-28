@@ -57,7 +57,6 @@ class Figure:
     """
     if not self.isValidMove(destination):
       return False
-    self.position = destination
     self.has_moved = True
     return True
 
@@ -110,8 +109,11 @@ class Pawn(Figure):
     if dest_figure.player == self.player:
       return False
     if abs(destination[0] - self.position[0]) == 1:
-      if(dest_figure is None
-          or self.player == 0 and destination[1] != self.position[1]+1
+      # Want to move diagonally -> can take?
+      if isinstance(dest_figure, Empty):
+        if not self.isEnPassant(destination):
+          return False
+      if(self.player == 0 and destination[1] != self.position[1]+1
           or self.player == 1 and destination[1] != self.position[1]-1):
         return False
     elif abs(destination[0] - self.position[0]) == 0:
@@ -128,6 +130,33 @@ class Pawn(Figure):
     else:
       return False
     if self.board.meansCheck(self, destination):
+      return False
+    return True
+
+  def isEnPassant(self, destination):
+    """
+    Check if the desired en passant taking is possible
+    Input:
+      last_move: Tuple of (Tuple of Tuple of int) and Object of class Figure
+      destination: Tuple of int
+    Return:
+      Bool
+    """
+    try:
+      last_move = self.board.game.history[-1]
+    except IndexError:
+      # First move, cannot be en passant
+      return False
+    last_destination = last_move[0][1]
+    last_start = last_move[0][0]
+    figure = self.board.getFigure(last_destination)
+    if not isinstance(figure, Pawn):
+      return False
+    if last_destination[0] != destination[0]:
+      return False
+    if abs(last_destination[1] - last_start[1]) != 2:
+      return False
+    if last_destination[1] != self.position[1]:
       return False
     return True
 
@@ -232,7 +261,7 @@ class King(Figure):
   def __init__(self, board, position, player):
     super().__init__(board, position, player, 100)
     self.name = 'k'
-    self.possible_moves = [(0, -1), (0, 1), (1, 0), (-1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    self.possible_moves = [(0, -1), (0, 1), (1, 0), (-1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1), (0, -2), (0, 2)]
 
   def getID(self):
     return 6 + 7*self.player
@@ -242,15 +271,58 @@ class King(Figure):
       return False
     if self.board.getFigure(destination).player == self.player:
       return False
-    if(abs(self.position[0] - destination[0]) > 1
+    if abs(destination[0] - self.position[0]) == 2:
+      # Tries a rochade
+      if self.has_moved:
+        return False
+      if destination[0] > self.position[0]:
+        rook = self.board.getFigure((7, self.position[1]))
+        intermediate_field = (self.position[0]+1, self.position[1])
+        next_to_rook = rook.position[0]-1, self.position[1]
+      else:
+        rook = self.board.getFigure((0, self.position[1]))
+        intermediate_field = (self.position[0]-1, self.position[1])
+        next_to_rook = rook.position[0]+1, self.position[1]
+      if rook.has_moved:
+        return False
+      if not self.board.isPathClear(self.position, next_to_rook):
+        return False
+      if self.board.meansCheck(self, intermediate_field):
+        return False
+    elif(abs(self.position[0] - destination[0]) > 1
       or abs(self.position[1] - destination[1]) > 1):
       return False
     if self.board.meansCheck(self, destination):
       return False
     return True
 
+  def move(self, destination):
+    """
+    Move to destination
+    Input:
+      destination: Tuple of Int     - X and Y coordinate of destination
+    Return:
+      Bool                          - True: All fine, False: Invalid move
+    """
+    if not self.isValidMove(destination):
+      return False
+    if abs(destination[0] - self.position[0]) == 2:
+      # Rochade
+      if destination[0] > self.position[0]:
+        rook = self.board.getFigure((7, self.position[1]))
+        intermediate_field = (self.position[0]+1, self.position[1])
+      else:
+        rook = self.board.getFigure((0, self.position[1]))
+        intermediate_field = (self.position[0]-1, self.position[1])
+      self.board.update(rook, intermediate_field)
+      rook.has_moved = True
+    self.has_moved = True
+    return True
+
 class Board:
   """Class for the chess board"""
+  game = None
+
   def __init__(self):
     self.board = [[Empty(self, (x, y)) for x in range(8)] for y in range(8)]
     for i in range(8):
@@ -318,11 +390,12 @@ class Board:
 
   def isCheck(self, player):
     """
-    Determine if the player stands in check
+    Determine if the player stands in check and returns both
+    the boolean result and a list of attacking figures
     Input:
       player: Int
     Return:
-      Bool
+      Tuple of Bool and list of Objects of class Figure
     """
     attacking_figures = []
     king = self.kings[player]
@@ -424,6 +497,7 @@ class Board:
       Bool
     """
     board = Board()
+    board.game = self.game
     board.board = copy.deepcopy(self.board)
     board.player_figures = [[], []]
     for i in range(8):
@@ -460,8 +534,13 @@ class Board:
     Return:
       None
     """
+    if isinstance(figure, Pawn) and figure.isEnPassant(destination):
+      old_figure_position = destination[0], figure.position[1]
+      old_figure = self.getFigure(old_figure_position)
+      self.board[old_figure_position[0]][old_figure_position[1]] = Empty(self, old_figure_position)
+    else:
+      old_figure = self.getFigure(destination)
     old_position = [figure.position[0], figure.position[1]]
-    old_figure = self.getFigure(destination)
     if not isinstance(old_figure, Empty):
       try:
         self.player_figures[old_figure.player].remove(old_figure)
@@ -470,6 +549,7 @@ class Board:
         pass
     self.board[destination[0]][destination[1]] = figure
     self.board[old_position[0]][old_position[1]] = Empty(self, old_position)
+    figure.position = destination
     return old_figure
 
   def move(self, player, start_pos, end_pos):
@@ -585,6 +665,7 @@ class ChessGame:
   """Class for the Chess Game"""
   def __init__(self):
     self.board = Board()
+    self.board.game = self
     self.current_player = 0
     self.history = []
 
@@ -614,9 +695,14 @@ class ChessGame:
     Return:
       Bool
     """
-    last_move = self.history[-1]
-    if last_move == self.history[-3] and last_move == self.history[-5]:
-      return True
+    try:
+      last_move = self.history[-1]
+      if last_move == self.history[-3] and last_move == self.history[-5]:
+        return True
+    except IndexError:
+      # Not enough moves
+      pass
+    # TODO: Check if 75 in the last 75 moves no figure was taken and no pawn was moved
     if self.board.isStaleMate(self.current_player):
       return True
     return False

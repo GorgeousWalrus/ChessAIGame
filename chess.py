@@ -1,4 +1,4 @@
-from ChessGame import ChessGame
+from game.ChessGame import ChessGame
 
 game = ChessGame()
 
@@ -19,9 +19,11 @@ while 1:
   game.printBoard()
   move = getMove()
   retval = game.move(move)
-  if retval in [1, 2]:
+  if retval == -1:
+    print("Invalid move!")
+  elif retval in [1, 2]:
     print("Player", retval, 'in check!')
-  if retval in [3, 4]:
+  elif retval in [3, 4]:
     print("Player", retval-2, 'won!')
     game.printBoard()
     break
